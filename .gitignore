@@ -473,3 +473,9 @@ dkms.conf
 ### Ansible template
 *.retry
 
+.idea/encodings.xml
+.idea/vcs.xml
+.idea/GoPCAP.iml
+.idea/modules.xml
+.idea/go.imports.xml
+.idea/inspectionProfiles/Project_Default.xml

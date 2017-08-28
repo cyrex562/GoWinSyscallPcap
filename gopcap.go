@@ -16,6 +16,7 @@ var (
 	wpcap, _           = syscall.LoadLibrary("wpcap.dll")
 	pcapFindAllDevs, _ = syscall.GetProcAddress(wpcap, "pcap_findalldevs")
 	pcapFreeAllDevs, _ = syscall.GetProcAddress(wpcap, "pcap_freealldevs")
+	pcapOpenLive, _    = syscall.GetProcAddress(wpcap, "pcap_open_live")
 )
 
 var ifNameFlag string
@@ -247,6 +248,15 @@ func PCAPFreeAllDevs(pcapIf *PCAPIf) {
 }
 
 /*
+
+pcap_t* pcap_open_live(	const char * 	device,
+						int 	snaplen,
+						int 	promisc,
+						int 	to_ms,
+						char * 	ebuf)
+*/
+
+/*
 int pcap_findalldevs(pcap_if_t **alldevsp,
                      char      *errbuf)
 */
@@ -404,18 +414,21 @@ void packet_handler(u_char *param,
     dport);
 }
 
+	arg1: u_char *param
+	arg2: const struct pcap_pkthdr *header
+	arg3: const u_char *pkt_data
 */
 func packetHandler(
-	param *byte, // u_char *param
-	header *PcapPktHdr, // const struct pcap_pkthdr *header
-	pktData *byte) { // const u_char *pkt_data
+	param *byte,
+	header *PcapPktHdr,
+	pktData *byte) {
 	//var tm TimeVal
 	//var localTVSec int32
 	//var pcapPktHdr = (*PcapPktHdr)(unsafe.Pointer(header))
 	//var ipHdr IPHeader
 	//var udpHeader UDPHeader
-
 	//localTVSec = pcapPktHdr.TS.TVSec
+
 	pktDataPtr := uintptr(unsafe.Pointer(pktData))
 	ipHdrPtr := pktDataPtr + uintptr(14)
 	var ipHdr = (*IPHeader)(unsafe.Pointer(uintptr(ipHdrPtr)))
@@ -426,10 +439,6 @@ func packetHandler(
 	var sport = ntohs(udpHeader.SrcPort)
 	var dport = ntohs(udpHeader.DstPort)
 	fmt.Printf("ip len: %d, sport: %d, dport: %d", ipLen, sport, dport)
-}
-
-func parseCommandLine() {
-
 }
 
 func main() {
@@ -444,13 +453,12 @@ func main() {
 	interfaces := PcapFindAllDevs()
 	fmt.Println("interfaces: %v", interfaces)
 
-	for i := 0; i < len(interfaces); i++ {
-		iface := interfaces[i]
-
-	}
+	//for i := 0; i < len(interfaces); i++ {
+	//	iface := interfaces[i]
+	//
+	//}
 
 	// TODO: pick a specific adapter to user
-	// TODO: should we use a command line interpreter?
 	// TODO: check interface properties
 	///* Retrieve the mask of the first address of the interface */
 	//netmask=((struct sockaddr_in *)(d->addresses->netmask))->sin_addr.S_un.S_addr;
@@ -472,6 +480,7 @@ func main() {
 	//1000,			// read timeout
 	//errbuf			// error buffer
 	//)) == NULL)
+
 	// TODO: capture data
 	//pcap_loop(adhandle, 0, packet_handler, NULL);
 }
