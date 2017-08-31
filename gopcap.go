@@ -4,6 +4,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"strings"
 	"syscall"
 	unsafe "unsafe"
 )
@@ -17,14 +18,16 @@ var (
 	pcapFindAllDevs, _ = syscall.GetProcAddress(wpcap, "pcap_findalldevs")
 	pcapFreeAllDevs, _ = syscall.GetProcAddress(wpcap, "pcap_freealldevs")
 	pcapOpenLive, _    = syscall.GetProcAddress(wpcap, "pcap_open_live")
+	pcapNextEx, _      = syscall.GetProcAddress(wpcap, "pcap_next_ex")
 )
 
 var ifNameFlag string
-var ifAddrFlag string
+
+//var ifAddrFlag string
 
 func init() {
 	flag.StringVar(&ifNameFlag, "ifname", "", "interface name to search for and capture traffic from")
-	flag.StringVar(&ifAddrFlag, "ifaddr", "", "ip address of interface to capture from")
+	//flag.StringVar(&ifAddrFlag, "ifaddr", "", "ip address of interface to capture from")
 }
 
 const (
@@ -56,7 +59,7 @@ type TimeVal struct {
 00129     bpf_u_int32 len;
 00130 };
 */
-type PcapPktHdr struct {
+type PCAPPktHdr struct {
 	TS     TimeVal
 	CapLen uint32
 	Len    uint32
@@ -247,6 +250,76 @@ func PCAPFreeAllDevs(pcapIf *PCAPIf) {
 	}
 }
 
+type PCAPType *uintptr
+
+/* Callback function invoked by libpcap for every incoming packet */
+/*
+void packet_handler(u_char *param,
+                    const struct pcap_pkthdr *header,
+                    const u_char *pkt_data) {
+	struct tm *ltime;
+	char timestr[16];
+	ip_header *ih;
+	udp_header *uh;
+	u_int ip_len;
+	u_short sport,dport;
+	time_t local_tv_sec;
+
+	(VOID)(param);
+
+	local_tv_sec = header->ts.tv_sec;
+	ltime=localtime(&local_tv_sec);
+	strftime( timestr, sizeof timestr, "%H:%M:%S", ltime);
+
+	printf("%s.%.6d len:%d ", timestr, header->ts.tv_usec, header->len);
+
+	ih = (ip_header *) (pkt_data + 14); //length of ethernet header
+	ip_len = (ih->ver_ihl & 0xf) * 4;
+	uh = (udp_header *) ((u_char*)ih + ip_len);
+
+	sport = ntohs( uh->sport );
+	dport = ntohs( uh->dport );
+
+    printf("%d.%d.%d.%d.%d -> %d.%d.%d.%d.%d\n",
+    ih->saddr.byte1,
+    ih->saddr.byte2,
+    ih->saddr.byte3,
+    ih->saddr.byte4,
+    sport,
+    ih->daddr.byte1,
+    ih->daddr.byte2,
+    ih->daddr.byte3,
+    ih->daddr.byte4,
+    dport);
+}
+
+	arg1: u_char *param
+	arg2: const struct pcap_pkthdr *header
+	arg3: const u_char *pkt_data
+*/
+func packetHandler(
+	param *byte,
+	header *PCAPPktHdr,
+	pktData *byte) {
+	//var tm TimeVal
+	//var localTVSec int32
+	//var pcapPktHdr = (*PCAPPktHdr)(unsafe.Pointer(header))
+	//var ipHdr IPHeader
+	//var udpHeader UDPHeader
+	//localTVSec = pcapPktHdr.TS.TVSec
+
+	pktDataPtr := uintptr(unsafe.Pointer(pktData))
+	ipHdrPtr := pktDataPtr + uintptr(14)
+	var ipHdr = (*IPHeader)(unsafe.Pointer(uintptr(ipHdrPtr)))
+	var ipLen = (ipHdr.VerIHL & 0xf) * 4
+
+	udpHeaderPtr := ipHdrPtr + uintptr(ipLen)
+	var udpHeader = (*UDPHeader)(unsafe.Pointer(udpHeaderPtr))
+	var sport = ntohs(udpHeader.SrcPort)
+	var dport = ntohs(udpHeader.DstPort)
+	fmt.Printf("ip len: %d, sport: %d, dport: %d", ipLen, sport, dport)
+}
+
 /*
 
 pcap_t* pcap_open_live(	const char * 	device,
@@ -255,6 +328,35 @@ pcap_t* pcap_open_live(	const char * 	device,
 						int 	to_ms,
 						char * 	ebuf)
 */
+func PCAPOpenLive(device string, snaplen int, promisc int, timeout int) uintptr {
+	fmt.Println("opening PCAP device for capturing")
+
+	errBuf := [256]byte{}
+
+	var devBytes *byte
+
+	devBytes, _ = syscall.BytePtrFromString(device)
+
+	ret, _, callErr := syscall.Syscall6(
+		pcapOpenLive,
+		5,
+		uintptr(unsafe.Pointer(devBytes)),
+		uintptr(snaplen),
+		uintptr(promisc),
+		uintptr(timeout),
+		uintptr(unsafe.Pointer(&errBuf)),
+		0)
+	if callErr != 0 {
+		abort("pcap_open_live", callErr)
+	}
+	// ret: -1 = failure
+	if isValidPtr(ret) {
+		// TODO: print contents of err buf
+		abort("pcap_open_live", errors.New(string(errBuf[:])))
+	}
+
+	return ret
+}
 
 /*
 int pcap_findalldevs(pcap_if_t **alldevsp,
@@ -272,11 +374,11 @@ func PcapFindAllDevs() (interfaces []InterfaceInfo) {
 		uintptr(unsafe.Pointer(&errBufBytes)),
 		0)
 	if callErr != 0 {
-		abort("Call findalldevs", callErr)
+		abort("pcap_findalldevs", callErr)
 	}
 	// ret: -1 = failure
 	if ret != 0 {
-		abort("Call findalldevs failed", errors.New(string(errBufBytes[:])))
+		abort("pcap_findalldevs", errors.New(string(errBufBytes[:])))
 	}
 	// ret: 0 = success
 	var iface *PCAPIf
@@ -373,90 +475,64 @@ func PcapFindAllDevs() (interfaces []InterfaceInfo) {
 	return interfaces
 }
 
-/* Callback function invoked by libpcap for every incoming packet */
 /*
-void packet_handler(u_char *param,
-                    const struct pcap_pkthdr *header,
-                    const u_char *pkt_data) {
-	struct tm *ltime;
-	char timestr[16];
-	ip_header *ih;
-	udp_header *uh;
-	u_int ip_len;
-	u_short sport,dport;
-	time_t local_tv_sec;
-
-	(VOID)(param);
-
-	local_tv_sec = header->ts.tv_sec;
-	ltime=localtime(&local_tv_sec);
-	strftime( timestr, sizeof timestr, "%H:%M:%S", ltime);
-
-	printf("%s.%.6d len:%d ", timestr, header->ts.tv_usec, header->len);
-
-	ih = (ip_header *) (pkt_data + 14); //length of ethernet header
-	ip_len = (ih->ver_ihl & 0xf) * 4;
-	uh = (udp_header *) ((u_char*)ih + ip_len);
-
-	sport = ntohs( uh->sport );
-	dport = ntohs( uh->dport );
-
-    printf("%d.%d.%d.%d.%d -> %d.%d.%d.%d.%d\n",
-    ih->saddr.byte1,
-    ih->saddr.byte2,
-    ih->saddr.byte3,
-    ih->saddr.byte4,
-    sport,
-    ih->daddr.byte1,
-    ih->daddr.byte2,
-    ih->daddr.byte3,
-    ih->daddr.byte4,
-    dport);
-}
-
-	arg1: u_char *param
-	arg2: const struct pcap_pkthdr *header
-	arg3: const u_char *pkt_data
+int pcap_next_ex	(	pcap_t * 	p,
+struct pcap_pkthdr ** 	pkt_header,
+const u_char ** 	pkt_data
+)
 */
-func packetHandler(
-	param *byte,
-	header *PcapPktHdr,
-	pktData *byte) {
-	//var tm TimeVal
-	//var localTVSec int32
-	//var pcapPktHdr = (*PcapPktHdr)(unsafe.Pointer(header))
-	//var ipHdr IPHeader
-	//var udpHeader UDPHeader
-	//localTVSec = pcapPktHdr.TS.TVSec
+func PCAPNextEx(pcapHandle uintptr) (pktData *uint8, retcode int) {
 
-	pktDataPtr := uintptr(unsafe.Pointer(pktData))
-	ipHdrPtr := pktDataPtr + uintptr(14)
-	var ipHdr = (*IPHeader)(unsafe.Pointer(uintptr(ipHdrPtr)))
-	var ipLen = (ipHdr.VerIHL & 0xf) * 4
+	var pktHdr *PCAPPktHdr
 
-	udpHeaderPtr := ipHdrPtr + uintptr(ipLen)
-	var udpHeader = (*UDPHeader)(unsafe.Pointer(udpHeaderPtr))
-	var sport = ntohs(udpHeader.SrcPort)
-	var dport = ntohs(udpHeader.DstPort)
-	fmt.Printf("ip len: %d, sport: %d, dport: %d", ipLen, sport, dport)
+	ret, _, callErr := syscall.Syscall(
+		pcapOpenLive,
+		3,
+		uintptr(pcapHandle),
+		uintptr(unsafe.Pointer(&pktHdr)),
+		uintptr(unsafe.Pointer(&pktData)))
+	if callErr != 0 {
+		abort("pcap_next_ex", callErr)
+	}
+	// ret = 1: ok
+	// ret = 0: timeout
+	// ret = -1: error
+	// ret = -2: EOF
+	retcode = (int)(ret)
+	return pktData, retcode
 }
 
 func main() {
 	defer syscall.FreeLibrary(wpcap)
 
-	var getUserInput = false
-	if ifNameFlag == "" && ifAddrFlag == "" {
-		fmt.Println("no interface or ip address chosen")
-		getUserInput = true
-	}
+	//var getUserInput = false
+	//if ifNameFlag == "" && ifAddrFlag == "" {
+	//if ifNameFlag == "" {
+	//	fmt.Println("no interface name provided!")
+	//	return
+	//}
+
+	var ifNameFlag = "61BDEB"
 
 	interfaces := PcapFindAllDevs()
 	fmt.Println("interfaces: %v", interfaces)
 
-	//for i := 0; i < len(interfaces); i++ {
-	//	iface := interfaces[i]
-	//
-	//}
+	var outIdx int = -1
+	for i := 0; i < len(interfaces); i++ {
+		iface := interfaces[i]
+		if strings.Contains(iface.Name, ifNameFlag) {
+			outIdx = i
+			break
+		} else if strings.Contains(iface.Description, ifNameFlag) {
+			outIdx = i
+			break
+		}
+	}
+
+	if outIdx == -1 {
+		fmt.Println("interface not found")
+		return
+	}
 
 	// TODO: pick a specific adapter to user
 	// TODO: check interface properties
@@ -480,7 +556,29 @@ func main() {
 	//1000,			// read timeout
 	//errbuf			// error buffer
 	//)) == NULL)
+	pcapHandle := PCAPOpenLive(interfaces[outIdx].Name, 0xffff, 1, 1000)
 
 	// TODO: capture data
 	//pcap_loop(adhandle, 0, packet_handler, NULL);
+
+	var retCode int
+	var pktData *uint8
+	for {
+		pktData, retCode = PCAPNextEx(pcapHandle)
+		if retCode == 1 {
+			// TODO: process packet
+			fmt.Printf("%p", pktData)
+		} else if retCode == 0 {
+			fmt.Println("timeout occurred")
+		} else if retCode == -1 {
+			fmt.Println("error occurred")
+			return
+		} else if retCode == -2 {
+			fmt.Println("EOF")
+			break
+		} else {
+			fmt.Printf("unknown error code: %d\n", retCode)
+			return
+		}
+	}
 }
