@@ -4,9 +4,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log"
+	"reflect"
 	"strings"
 	"syscall"
-	unsafe "unsafe"
+	"unsafe"
 )
 
 func abort(funcName string, err error) {
@@ -14,11 +16,11 @@ func abort(funcName string, err error) {
 }
 
 var (
-	wpcap, _           = syscall.LoadLibrary("wpcap.dll")
-	pcapFindAllDevs, _ = syscall.GetProcAddress(wpcap, "pcap_findalldevs")
-	pcapFreeAllDevs, _ = syscall.GetProcAddress(wpcap, "pcap_freealldevs")
-	pcapOpenLive, _    = syscall.GetProcAddress(wpcap, "pcap_open_live")
-	pcapNextEx, _      = syscall.GetProcAddress(wpcap, "pcap_next_ex")
+	wpcap, _             = syscall.LoadLibrary("wpcap.dll")
+	pcapFindAllDevsEx, _ = syscall.GetProcAddress(wpcap, "pcap_findalldevs_ex")
+	pcapFreeAllDevs, _   = syscall.GetProcAddress(wpcap, "pcap_freealldevs")
+	pcapOpenLive, _      = syscall.GetProcAddress(wpcap, "pcap_open_live")
+	pcapNextEx, _        = syscall.GetProcAddress(wpcap, "pcap_next_ex")
 )
 
 var ifNameFlag string
@@ -165,6 +167,12 @@ type UDPHeader struct {
 	Csum     uint16
 }
 
+type EthernetHeader struct {
+	DstMac    [6]byte
+	SrcMac    [6]byte
+	EtherType uint16
+}
+
 /* prototype of the packet handler */
 //void packet_handler(u_char *param, const struct pcap_pkthdr *header, const u_char *pkt_data);
 
@@ -203,11 +211,12 @@ func rawToString(in *byte) (out string, ok bool) {
 	var tail int = -1
 	for i := 0; i < 4096; i++ {
 		currByte := (*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(in)) + uintptr(i)))
-		middle = append(middle, *currByte)
 		tail = i
 		if *currByte == 0 {
 			break
 		}
+		middle = append(middle, *currByte)
+
 	}
 	if tail == 4095 {
 		ok = false
@@ -220,7 +229,7 @@ func rawToString(in *byte) (out string, ok bool) {
 }
 
 func isValidPtr(in uintptr) (ok bool) {
-	//fmt.Printf("pointer address: %#x\n", in)
+	fmt.Printf("pointer address: %#x\n", in)
 	ok = true
 	if in == 0 {
 		ok = false
@@ -246,78 +255,8 @@ func PCAPFreeAllDevs(pcapIf *PCAPIf) {
 		0)
 
 	if callErr != 0 {
-		abort("Call PCAPFreeAllDevs", callErr)
+		log.Fatal(callErr)
 	}
-}
-
-type PCAPType *uintptr
-
-/* Callback function invoked by libpcap for every incoming packet */
-/*
-void packet_handler(u_char *param,
-                    const struct pcap_pkthdr *header,
-                    const u_char *pkt_data) {
-	struct tm *ltime;
-	char timestr[16];
-	ip_header *ih;
-	udp_header *uh;
-	u_int ip_len;
-	u_short sport,dport;
-	time_t local_tv_sec;
-
-	(VOID)(param);
-
-	local_tv_sec = header->ts.tv_sec;
-	ltime=localtime(&local_tv_sec);
-	strftime( timestr, sizeof timestr, "%H:%M:%S", ltime);
-
-	printf("%s.%.6d len:%d ", timestr, header->ts.tv_usec, header->len);
-
-	ih = (ip_header *) (pkt_data + 14); //length of ethernet header
-	ip_len = (ih->ver_ihl & 0xf) * 4;
-	uh = (udp_header *) ((u_char*)ih + ip_len);
-
-	sport = ntohs( uh->sport );
-	dport = ntohs( uh->dport );
-
-    printf("%d.%d.%d.%d.%d -> %d.%d.%d.%d.%d\n",
-    ih->saddr.byte1,
-    ih->saddr.byte2,
-    ih->saddr.byte3,
-    ih->saddr.byte4,
-    sport,
-    ih->daddr.byte1,
-    ih->daddr.byte2,
-    ih->daddr.byte3,
-    ih->daddr.byte4,
-    dport);
-}
-
-	arg1: u_char *param
-	arg2: const struct pcap_pkthdr *header
-	arg3: const u_char *pkt_data
-*/
-func packetHandler(
-	param *byte,
-	header *PCAPPktHdr,
-	pktData *byte) {
-	//var tm TimeVal
-	//var localTVSec int32
-	//var pcapPktHdr = (*PCAPPktHdr)(unsafe.Pointer(header))
-	//var ipHdr IPHeader
-	//var udpHeader UDPHeader
-	//localTVSec = pcapPktHdr.TS.TVSec
-
-	pktDataPtr := uintptr(unsafe.Pointer(pktData))
-	ipHdrPtr := pktDataPtr + uintptr(14)
-	var ipHdr = (*IPHeader)(unsafe.Pointer(uintptr(ipHdrPtr)))
-	var ipLen = (ipHdr.VerIHL & 0xf) * 4
-
-	udpHeaderPtr := ipHdrPtr + uintptr(ipLen)
-	var udpHeader = (*UDPHeader)(unsafe.Pointer(udpHeaderPtr))
-	var sport = ntohs(udpHeader.SrcPort)
-	var dport = ntohs(udpHeader.DstPort)
-	fmt.Printf("ip len: %d, sport: %d, dport: %d", ipLen, sport, dport)
 }
 
 /*
@@ -334,8 +273,11 @@ func PCAPOpenLive(device string, snaplen int, promisc int, timeout int) uintptr 
 	errBuf := [256]byte{}
 
 	var devBytes *byte
-
-	devBytes, _ = syscall.BytePtrFromString(device)
+	var err error
+	devBytes, err = syscall.BytePtrFromString(device)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	ret, _, callErr := syscall.Syscall6(
 		pcapOpenLive,
@@ -350,7 +292,7 @@ func PCAPOpenLive(device string, snaplen int, promisc int, timeout int) uintptr 
 		abort("pcap_open_live", callErr)
 	}
 	// ret: -1 = failure
-	if isValidPtr(ret) {
+	if isValidPtr(ret) == false {
 		// TODO: print contents of err buf
 		abort("pcap_open_live", errors.New(string(errBuf[:])))
 	}
@@ -359,26 +301,39 @@ func PCAPOpenLive(device string, snaplen int, promisc int, timeout int) uintptr 
 }
 
 /*
-int pcap_findalldevs(pcap_if_t **alldevsp,
-                     char      *errbuf)
+int pcap_findalldevs(char*                source,
+					 struct pcap_rmtauth* auth,
+                     pcap_if_t**          alldevsp,
+                     char*                errbuf)
 */
 func PcapFindAllDevs() (interfaces []InterfaceInfo) {
 	errBufBytes := [256]byte{}
 	var allDevsPtr uint
+	var source string = "rpcap://"
+	var sourceBytes *byte
+	var err error
+
+	sourceBytes, err = syscall.BytePtrFromString(source)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	fmt.Println("getting list of interfaces using syscall")
-	ret, _, callErr := syscall.Syscall(
-		pcapFindAllDevs,
-		2,
+	ret, _, callErr := syscall.Syscall6(
+		pcapFindAllDevsEx,
+		4,
+		uintptr(unsafe.Pointer(sourceBytes)),
+		0,
 		uintptr(unsafe.Pointer(&allDevsPtr)),
 		uintptr(unsafe.Pointer(&errBufBytes)),
+		0,
 		0)
 	if callErr != 0 {
-		abort("pcap_findalldevs", callErr)
+		log.Fatal(callErr)
 	}
 	// ret: -1 = failure
 	if ret != 0 {
-		abort("pcap_findalldevs", errors.New(string(errBufBytes[:])))
+		log.Fatal(errors.New(string(errBufBytes[:])))
 	}
 	// ret: 0 = success
 	var iface *PCAPIf
@@ -481,25 +436,36 @@ struct pcap_pkthdr ** 	pkt_header,
 const u_char ** 	pkt_data
 )
 */
-func PCAPNextEx(pcapHandle uintptr) (pktData *uint8, retcode int) {
-
-	var pktHdr *PCAPPktHdr
+func PCAPNextEx(pcapHandle uintptr) (pktHdr *PCAPPktHdr, pktData []byte, retcode int) {
+	var pktHdrPtr uint
+	var pktDataPtr uint
 
 	ret, _, callErr := syscall.Syscall(
-		pcapOpenLive,
+		pcapNextEx,
 		3,
 		uintptr(pcapHandle),
-		uintptr(unsafe.Pointer(&pktHdr)),
-		uintptr(unsafe.Pointer(&pktData)))
+		uintptr(unsafe.Pointer(&pktHdrPtr)),
+		uintptr(unsafe.Pointer(&pktDataPtr)))
 	if callErr != 0 {
-		abort("pcap_next_ex", callErr)
+		log.Fatal(callErr)
 	}
 	// ret = 1: ok
 	// ret = 0: timeout
 	// ret = -1: error
 	// ret = -2: EOF
+
+	// (*PCAPIf)(unsafe.Pointer(uintptr(allDevsPtr)))
+
+	pktHdr = (*PCAPPktHdr)(unsafe.Pointer(uintptr(pktHdrPtr)))
+
+	var pktDataBytes []byte
+	sliceHeader := (*reflect.SliceHeader)(unsafe.Pointer(&pktDataBytes))
+	sliceHeader.Cap = (int)(pktHdr.Len)
+	sliceHeader.Len = (int)(pktHdr.Len)
+	sliceHeader.Data = uintptr(unsafe.Pointer(uintptr(pktHdrPtr)))
+
 	retcode = (int)(ret)
-	return pktData, retcode
+	return pktHdr, pktDataBytes, retcode
 }
 
 func main() {
@@ -530,8 +496,7 @@ func main() {
 	}
 
 	if outIdx == -1 {
-		fmt.Println("interface not found")
-		return
+		log.Fatal(errors.New("interface not found"))
 	}
 
 	// TODO: pick a specific adapter to user
@@ -562,22 +527,56 @@ func main() {
 	//pcap_loop(adhandle, 0, packet_handler, NULL);
 
 	var retCode int
-	var pktData *uint8
+	var pktData []byte
+	var pktHdr *PCAPPktHdr
+	//var err error
+
 	for {
-		pktData, retCode = PCAPNextEx(pcapHandle)
+		pktHdr, pktData, retCode = PCAPNextEx(pcapHandle)
 		if retCode == 1 {
-			// TODO: process packet
-			fmt.Printf("%p", pktData)
+			fmt.Printf("pktHdr: %#v\n", pktHdr)
+			fmt.Printf("pktData: % 02x\n", pktData)
+			srcMac := [6]byte{pktData[0], pktData[1], pktData[2], pktData[3], pktData[4], pktData[5]}
+			fmt.Printf("srcMac: %02x:%02x:%02x:%02x:%02x:%02x, ", srcMac[0], srcMac[1], srcMac[2], srcMac[3],
+				srcMac[4], srcMac[5])
+			dstMac := [6]byte{pktData[6], pktData[7], pktData[8], pktData[9], pktData[10], pktData[11]}
+			fmt.Printf("dstMac: %02x:%02x:%02x:%02x:%02x:%02x, ", dstMac[0], dstMac[1], dstMac[2], dstMac[3],
+				dstMac[4], dstMac[5])
+			//etherTypeBytes := [2]byte{pktData[12], pktData[13]}
+			var etherType uint16 = (uint16)(pktData[13] << 8 | pktData[12])
+			//err = binary.Read(bytes.NewReader(etherTypeBytes[:2]), binary.BigEndian, etherType)
+			//if err != nil {
+			//	log.Fatal(err)
+			//}
+			fmt.Printf("etherType: %0x\n", etherType)
+
+			if etherType <= 1500 {
+				fmt.Println("ethernet frame is a Novell raw 802.3, IEEE 802.2 LLC, or IEEE 802.2 SNAP frame")
+				fmt.Printf("payload start bytes: %02x", pktData[14:16])
+				if pktData[14] == 0xff && pktData[15] == 0xff {
+					fmt.Println("ETH frame type = Novell raw 802.3")
+				} else if pktData[14] == 0xAA && pktData[15] == 0xAA {
+					fmt.Println("ETH frame type = IEEE 802.2 SNAP frame")
+				} else {
+					fmt.Println("ETH frame type = IEEE 802.2 LLC Frame")
+					fmt.Printf("DSAP: %02x, SSAP: %02x\n", pktData[14], pktData[15])
+				}
+			} else if etherType >= 1536 {
+				fmt.Println("ethernet frame type is Ethernet II")
+			} else {
+				log.Fatal("unknown ethernet type, etherType is %d", etherType)
+			}
+
 		} else if retCode == 0 {
 			fmt.Println("timeout occurred")
 		} else if retCode == -1 {
-			fmt.Println("error occurred")
-			return
+			log.Fatal(errors.New("error occurred calling PCAPNextEx"))
 		} else if retCode == -2 {
 			fmt.Println("EOF")
 			break
 		} else {
 			fmt.Printf("unknown error code: %d\n", retCode)
+			log.Fatal(errors.New(fmt.Sprint("unknown error code: %d", retCode)))
 			return
 		}
 	}
